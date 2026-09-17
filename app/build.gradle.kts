@@ -61,6 +61,8 @@ dependencies {
 
     // Provides Task<T>.await() used to bridge ML Kit's Task API into coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     // ML Kit - text recognition (multiple scripts)
     implementation("com.google.mlkit:text-recognition:16.0.1")

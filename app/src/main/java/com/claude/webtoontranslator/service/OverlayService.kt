@@ -29,6 +29,7 @@ import com.claude.webtoontranslator.util.SettingsDataStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -263,7 +264,7 @@ class OverlayService : Service() {
 
         serviceScope.launch {
             view.overlayOpacity = try {
-                kotlinx.coroutines.flow.first(settingsDataStore.opacity)
+                settingsDataStore.opacity.first()
             } catch (_: Exception) {
                 0.92f
             }
