@@ -30,6 +30,7 @@ import com.claude.webtoontranslator.util.SettingsDataStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -41,6 +42,7 @@ class OverlayService : Service() {
         const val EXTRA_RESULT_DATA = "extra_result_data"
         const val CHANNEL_ID = "overlay_translator_channel"
         const val NOTIFICATION_ID = 1001
+
         private const val CLICK_DRAG_THRESHOLD = 12
     }
 
@@ -55,14 +57,21 @@ class OverlayService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var captureManager: ScreenCaptureManager? = null
 
-    private val textRecognitionManager = TextRecognitionManager()
-    private val translationManager = TranslationManager()
-    private val onlineTranslationManager = OnlineTranslationManager()
+    private val textRecognitionManager =
+        TextRecognitionManager()
+
+    private val translationManager =
+        TranslationManager()
+
+    private val onlineTranslationManager =
+        OnlineTranslationManager()
 
     private lateinit var settingsDataStore: SettingsDataStore
 
     private val serviceScope =
-        CoroutineScope(Dispatchers.Main + Job())
+        CoroutineScope(
+            Dispatchers.Main + Job()
+        )
 
     private var buttonView: TextView? = null
     private var buttonParams: WindowManager.LayoutParams? = null
@@ -76,7 +85,9 @@ class OverlayService : Service() {
         super.onCreate()
 
         windowManager =
-            getSystemService(WINDOW_SERVICE) as WindowManager
+            getSystemService(
+                WINDOW_SERVICE
+            ) as WindowManager
 
         settingsDataStore =
             SettingsDataStore(this)
@@ -103,25 +114,34 @@ class OverlayService : Service() {
             ) ?: Activity.RESULT_CANCELED
 
         val resultData: Intent? =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (
+                Build.VERSION.SDK_INT >=
+                Build.VERSION_CODES.TIRAMISU
+            ) {
+
                 intent?.getParcelableExtra(
                     EXTRA_RESULT_DATA,
                     Intent::class.java
                 )
+
             } else {
+
                 @Suppress("DEPRECATION")
-                intent?.getParcelableExtra(EXTRA_RESULT_DATA)
+                intent?.getParcelableExtra(
+                    EXTRA_RESULT_DATA
+                )
             }
 
         /*
-         * IMPORTANT:
-         * The MediaProjection permission Intent must come directly
-         * from the screen-capture permission activity.
+         * The MediaProjection permission Intent must
+         * come directly from the screen-capture
+         * permission activity.
          */
         if (
             resultCode != Activity.RESULT_OK ||
             resultData == null
         ) {
+
             Toast.makeText(
                 this,
                 "Screen capture permission data is missing. Tap Start Overlay again and approve screen capture.",
@@ -129,6 +149,7 @@ class OverlayService : Service() {
             ).show()
 
             stopSelf()
+
             return START_NOT_STICKY
         }
 
@@ -153,6 +174,7 @@ class OverlayService : Service() {
             ).show()
 
             stopSelf()
+
             return START_NOT_STICKY
 
         } catch (e: Exception) {
@@ -164,6 +186,7 @@ class OverlayService : Service() {
             ).show()
 
             stopSelf()
+
             return START_NOT_STICKY
         }
 
@@ -176,13 +199,14 @@ class OverlayService : Service() {
             ).show()
 
             stopSelf()
+
             return START_NOT_STICKY
         }
 
         mediaProjection = projection
 
         /*
-         * Create the floating button.
+         * Create floating button.
          */
         try {
 
@@ -197,6 +221,7 @@ class OverlayService : Service() {
             ).show()
 
             stopSelf()
+
             return START_NOT_STICKY
         }
 
@@ -218,12 +243,14 @@ class OverlayService : Service() {
                 )
             )
 
-            val metrics = DisplayMetrics()
+            val metrics =
+                DisplayMetrics()
 
             windowManager.defaultDisplay
                 .getRealMetrics(metrics)
 
-            mediaProjection?.let { projectionInstance ->
+            mediaProjection?.let {
+                projectionInstance ->
 
                 val capture =
                     ScreenCaptureManager(
@@ -252,7 +279,8 @@ class OverlayService : Service() {
          */
         serviceScope.launch {
 
-            translationManager.preDownloadModels()
+            translationManager
+                .preDownloadModels()
 
             settingsDataStore
                 .setModelsDownloaded(true)
@@ -264,7 +292,8 @@ class OverlayService : Service() {
     private fun foregroundServiceType(): Int {
 
         return if (
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.Q
         ) {
 
             ServiceInfo
@@ -286,27 +315,35 @@ class OverlayService : Service() {
             return
         }
 
-        val button = TextView(this).apply {
+        val button =
+            TextView(this).apply {
 
-            text = "訳"
+                text = "訳"
 
-            setTextColor(Color.WHITE)
+                setTextColor(
+                    Color.WHITE
+                )
 
-            textSize = 18f
+                textSize = 18f
 
-            gravity = Gravity.CENTER
+                gravity =
+                    Gravity.CENTER
 
-            setBackgroundColor(
-                Color.parseColor("#6750A4")
-            )
+                setBackgroundColor(
+                    Color.parseColor(
+                        "#6750A4"
+                    )
+                )
 
-            alpha = 0.95f
-        }
+                alpha = 0.95f
+            }
 
         val sizePx =
             (
                 56 *
-                    resources.displayMetrics.density
+                    resources
+                        .displayMetrics
+                        .density
                 ).toInt()
 
         val overlayType =
@@ -321,7 +358,9 @@ class OverlayService : Service() {
             } else {
 
                 @Suppress("DEPRECATION")
-                WindowManager.LayoutParams.TYPE_PHONE
+
+                WindowManager.LayoutParams
+                    .TYPE_PHONE
             }
 
         val params =
@@ -335,7 +374,8 @@ class OverlayService : Service() {
             ).apply {
 
                 gravity =
-                    Gravity.TOP or Gravity.START
+                    Gravity.TOP or
+                    Gravity.START
 
                 x = 0
                 y = 300
@@ -349,17 +389,25 @@ class OverlayService : Service() {
 
         var isDrag = false
 
-        button.setOnTouchListener { _, event ->
+        button.setOnTouchListener {
+            _,
+            event ->
 
             when (event.action) {
 
                 MotionEvent.ACTION_DOWN -> {
 
-                    downX = event.rawX
-                    downY = event.rawY
+                    downX =
+                        event.rawX
 
-                    startX = params.x
-                    startY = params.y
+                    downY =
+                        event.rawY
+
+                    startX =
+                        params.x
+
+                    startY =
+                        params.y
 
                     isDrag = false
 
@@ -369,10 +417,16 @@ class OverlayService : Service() {
                 MotionEvent.ACTION_MOVE -> {
 
                     val dx =
-                        (event.rawX - downX).toInt()
+                        (
+                            event.rawX -
+                            downX
+                        ).toInt()
 
                     val dy =
-                        (event.rawY - downY).toInt()
+                        (
+                            event.rawY -
+                            downY
+                        ).toInt()
 
                     if (
                         abs(dx) >
@@ -468,6 +522,7 @@ class OverlayService : Service() {
 
                 val blocks =
                     withDispatcherIO {
+
                         textRecognitionManager
                             .recognize(bitmap)
                     }
@@ -511,10 +566,11 @@ class OverlayService : Service() {
                 if (overlayItems.isEmpty()) {
 
                     setButtonLabel(
-                        if (mode == "online")
+                        if (mode == "online") {
                             "N/A"
-                        else
+                        } else {
                             "EN?"
+                        }
                     )
 
                     state = State.IDLE
@@ -522,7 +578,9 @@ class OverlayService : Service() {
                     return@launch
                 }
 
-                showOverlay(overlayItems)
+                showOverlay(
+                    overlayItems
+                )
 
                 setButtonLabel("✕")
 
@@ -549,7 +607,9 @@ class OverlayService : Service() {
 
             val result =
                 translationManager
-                    .detectAndTranslate(block.text)
+                    .detectAndTranslate(
+                        block.text
+                    )
                     ?: continue
 
             val bgColor =
@@ -613,14 +673,17 @@ class OverlayService : Service() {
         block: suspend () -> T
     ): T {
 
-        return kotlinx.coroutines.withContext(
-            Dispatchers.Default
-        ) {
-            block()
-        }
+        return kotlinx.coroutines
+            .withContext(
+                Dispatchers.Default
+            ) {
+                block()
+            }
     }
 
-    private fun setButtonLabel(label: String) {
+    private fun setButtonLabel(
+        label: String
+    ) {
 
         buttonView?.text = label
     }
@@ -636,7 +699,9 @@ class OverlayService : Service() {
         removeOverlayView()
 
         val view =
-            TranslationOverlayView(this)
+            TranslationOverlayView(
+                this
+            )
 
         view.items = items
 
@@ -657,8 +722,12 @@ class OverlayService : Service() {
 
         val params =
             WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.MATCH_PARENT,
+
+                WindowManager.LayoutParams
+                    .MATCH_PARENT,
+
+                WindowManager.LayoutParams
+                    .MATCH_PARENT,
 
                 if (
                     Build.VERSION.SDK_INT >=
@@ -671,14 +740,17 @@ class OverlayService : Service() {
                 } else {
 
                     @Suppress("DEPRECATION")
+
                     WindowManager.LayoutParams
                         .TYPE_PHONE
                 },
 
                 WindowManager.LayoutParams
                     .FLAG_NOT_TOUCHABLE or
+
                     WindowManager.LayoutParams
                         .FLAG_NOT_FOCUSABLE or
+
                     WindowManager.LayoutParams
                         .FLAG_LAYOUT_IN_SCREEN,
 
@@ -708,7 +780,10 @@ class OverlayService : Service() {
         overlayView?.let {
 
             try {
-                windowManager.removeView(it)
+
+                windowManager
+                    .removeView(it)
+
             } catch (_: Exception) {
             }
         }
@@ -731,7 +806,8 @@ class OverlayService : Service() {
                 NotificationChannel(
                     CHANNEL_ID,
                     getString(
-                        R.string.notification_channel_name
+                        R.string
+                            .notification_channel_name
                     ),
                     NotificationManager
                         .IMPORTANCE_LOW
@@ -748,7 +824,8 @@ class OverlayService : Service() {
         }
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification():
+        Notification {
 
         val pendingIntent =
             PendingIntent.getActivity(
@@ -767,13 +844,18 @@ class OverlayService : Service() {
                 CHANNEL_ID
             )
             .setContentTitle(
-                getString(R.string.app_name)
+                getString(
+                    R.string.app_name
+                )
             )
             .setContentText(
-                getString(R.string.notification_text)
+                getString(
+                    R.string.notification_text
+                )
             )
             .setSmallIcon(
-                android.R.drawable.ic_menu_view
+                android.R.drawable
+                    .ic_menu_view
             )
             .setContentIntent(
                 pendingIntent
@@ -795,7 +877,10 @@ class OverlayService : Service() {
         buttonView?.let {
 
             try {
-                windowManager.removeView(it)
+
+                windowManager
+                    .removeView(it)
+
             } catch (_: Exception) {
             }
         }
