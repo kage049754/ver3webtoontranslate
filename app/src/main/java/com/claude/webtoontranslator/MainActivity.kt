@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -69,11 +70,20 @@ class MainActivity : ComponentActivity() {
     private fun startOverlayFlow() {
         if (!Settings.canDrawOverlays(this)) {
             pendingStartAfterOverlayPermission = true
-            val intent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:$packageName")
-            )
-            startActivity(intent)
+            try {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+                startActivity(intent)
+            } catch (e: Exception) {
+                pendingStartAfterOverlayPermission = false
+                Toast.makeText(
+                    this,
+                    "Couldn't open overlay permission settings on this device: ${e.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
             return
         }
         requestNotificationPermissionThenProject()
@@ -93,8 +103,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestMediaProjection() {
-        val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjectionLauncher.launch(manager.createScreenCaptureIntent())
+        try {
+            val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            mediaProjectionLauncher.launch(manager.createScreenCaptureIntent())
+        } catch (e: Exception) {
+            Toast.makeText(
+                this,
+                "Couldn't start screen capture permission dialog: ${e.message}",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 }
 
