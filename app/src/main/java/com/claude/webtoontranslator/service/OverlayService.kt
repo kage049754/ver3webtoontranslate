@@ -80,21 +80,34 @@ class OverlayService : Service() {
                 getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
 
-            val metrics = DisplayMetrics()
-            windowManager.defaultDisplay.getRealMetrics(metrics)
+            // Show the floating button immediately - independent of whether
+            // capture setup below succeeds, so the user always has a visible
+            // toggle even if something in the projection pipeline fails.
+            addButtonOverlay()
 
-            mediaProjection?.let { projection ->
-                val capture = ScreenCaptureManager(projection, metrics)
-                capture.start()
-                captureManager = capture
+            try {
+                mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+                    override fun onStop() {
+                        stopSelf()
+                    }
+                }, android.os.Handler(android.os.Looper.getMainLooper()))
+
+                val metrics = DisplayMetrics()
+                windowManager.defaultDisplay.getRealMetrics(metrics)
+
+                mediaProjection?.let { projection ->
+                    val capture = ScreenCaptureManager(projection, metrics)
+                    capture.start()
+                    captureManager = capture
+                }
+            } catch (e: Exception) {
+                setButtonLabel("!")
             }
 
             serviceScope.launch {
                 translationManager.preDownloadModels()
                 settingsDataStore.setModelsDownloaded(true)
             }
-
-            addButtonOverlay()
         } else {
             stopSelf()
         }
