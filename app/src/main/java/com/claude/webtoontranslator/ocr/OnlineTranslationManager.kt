@@ -10,23 +10,17 @@ import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
-/**
- * Online translation.
- *
- * Uses ML Kit to identify the source language and MyMemory
- * for the actual translation.
- *
- * This avoids depending on LibreTranslate public instances,
- * which may require an API key or become unavailable.
- */
 class OnlineTranslationManager {
 
     companion object {
-
         private const val ENDPOINT =
             "https://api.mymemory.translated.net/get"
 
         private const val TIMEOUT_MS = 12_000
+
+        // MyMemory documents a 500-byte limit for the q parameter.
+        // Keep a safety margin.
+        private const val MAX_QUERY_BYTES = 450
 
         val SUPPORTED_TARGET_LANGUAGES: List<Pair<String, String>> =
             listOf(
@@ -59,104 +53,346 @@ class OnlineTranslationManager {
         val translatedText: String
     )
 
+    /**
+     * Detect the source language and translate it to the selected target.
+     */
     suspend fun translate(
         text: String,
         targetLanguageCode: String
-    ): OnlineTranslationResult? {
+    ): OnlineTranslationResult? =
+        withContext(Dispatchers.IO) {
 
-        if (text.isBlank()) {
+            val cleanText = text
+                .replace("\u0000", "")
+                .trim()
+
+            if (cleanText.isBlank()) {
+                return@withContext null
+            }
+
+            /*
+             * First try ML Kit language identification.
+             */
+            val detectedLanguage = try {
+                languageIdentifier
+                    .identifyLanguage(cleanText)
+                    .await()
+            } catch (_: Exception) {
+                null
+            }
+
+            /*
+             * Normalize ML Kit result.
+             *
+             * Examples:
+             * ja       -> ja
+             * ja-JP    -> ja
+             * zh-CN    -> zh
+             * ko-KR    -> ko
+             */
+            val sourceLanguage =
+                normalizeLanguage(detectedLanguage)
+                    ?: detectScriptLanguage(cleanText)
+                    ?: return@withContext null
+
+            val targetLanguage =
+                normalizeLanguage(targetLanguageCode)
+                    ?: return@withContext null
+
+            /*
+             * Don't translate if source and target are the same.
+             */
+            if (sourceLanguage == targetLanguage) {
+                return@withContext null
+            }
+
+            /*
+             * MyMemory has a byte limit, so split large OCR results.
+             */
+            val chunks =
+                splitByUtf8Bytes(
+                    text = cleanText,
+                    maxBytes = MAX_QUERY_BYTES
+                )
+
+            if (chunks.isEmpty()) {
+                return@withContext null
+            }
+
+            val translatedParts = mutableListOf<String>()
+
+            for (chunk in chunks) {
+
+                val translated =
+                    translateChunk(
+                        text = chunk,
+                        sourceLanguage = sourceLanguage,
+                        targetLanguage = targetLanguage
+                    )
+
+                if (translated.isNullOrBlank()) {
+                    return@withContext null
+                }
+
+                translatedParts += translated
+            }
+
+            OnlineTranslationResult(
+                detectedSourceLanguage = sourceLanguage,
+                translatedText = translatedParts
+                    .joinToString(" ")
+                    .trim()
+            )
+        }
+
+    /**
+     * Convert language identifiers to simple two-letter codes.
+     */
+    private fun normalizeLanguage(
+        code: String?
+    ): String? {
+
+        if (code.isNullOrBlank()) {
             return null
         }
 
-        return withContext(Dispatchers.IO) {
+        if (code.equals("und", ignoreCase = true)) {
+            return null
+        }
 
-            try {
+        val normalized =
+            code
+                .lowercase()
+                .substringBefore("-")
+                .substringBefore("_")
+                .trim()
 
-                val detectedLanguage =
-                    try {
-                        languageIdentifier
-                            .identifyLanguage(text)
-                            .await()
-                    } catch (_: Exception) {
-                        "und"
-                    }
-
-                if (
-                    detectedLanguage == "und" ||
-                    detectedLanguage.isBlank()
-                ) {
-                    return@withContext null
-                }
-
-                if (
-                    detectedLanguage.equals(
-                        targetLanguageCode,
-                        ignoreCase = true
-                    )
-                ) {
-                    return@withContext null
-                }
-
-                translateWithMyMemory(
-                    text = text,
-                    sourceLanguage = detectedLanguage,
-                    targetLanguage = targetLanguageCode
-                )
-
-            } catch (_: Exception) {
-
-                null
-            }
+        return normalized.takeIf {
+            it.length == 2
         }
     }
 
-    private fun translateWithMyMemory(
+    /**
+     * Fallback language detection for short manga text.
+     *
+     * ML Kit can sometimes return "und" when the OCR text
+     * is very short, such as:
+     *
+     * "こんにちは"
+     * "ありがとう"
+     * "안녕"
+     * "你好"
+     */
+    private fun detectScriptLanguage(
+        text: String
+    ): String? {
+
+        var japaneseCount = 0
+        var koreanCount = 0
+        var chineseCount = 0
+
+        for (character in text) {
+
+            when {
+
+                // Hiragana
+                character in '\u3040'..'\u309F' -> {
+                    japaneseCount++
+                }
+
+                // Katakana
+                character in '\u30A0'..'\u30FF' -> {
+                    japaneseCount++
+                }
+
+                // Hangul
+                character in '\uAC00'..'\uD7AF' -> {
+                    koreanCount++
+                }
+
+                // CJK Unified Ideographs
+                character in '\u4E00'..'\u9FFF' -> {
+                    chineseCount++
+                }
+            }
+        }
+
+        return when {
+
+            japaneseCount > 0 ->
+                "ja"
+
+            koreanCount > 0 ->
+                "ko"
+
+            chineseCount > 0 ->
+                "zh"
+
+            else ->
+                null
+        }
+    }
+
+    /**
+     * Split text without exceeding the UTF-8 byte limit.
+     *
+     * This is important for Japanese, Korean and Chinese
+     * because one character can use multiple UTF-8 bytes.
+     */
+    private fun splitByUtf8Bytes(
+        text: String,
+        maxBytes: Int
+    ): List<String> {
+
+        val result = mutableListOf<String>()
+
+        var current = StringBuilder()
+
+        fun flushCurrent() {
+
+            val value =
+                current
+                    .toString()
+                    .trim()
+
+            if (value.isNotBlank()) {
+                result += value
+            }
+
+            current = StringBuilder()
+        }
+
+        /*
+         * First try splitting around whitespace.
+         */
+        val pieces =
+            text.split(
+                Regex("(?<=\\s)|(?=\\s)")
+            )
+
+        for (piece in pieces) {
+
+            val candidate =
+                current.toString() + piece
+
+            val candidateBytes =
+                candidate
+                    .toByteArray(StandardCharsets.UTF_8)
+                    .size
+
+            if (candidateBytes <= maxBytes) {
+
+                current.append(piece)
+
+            } else {
+
+                flushCurrent()
+
+                val pieceBytes =
+                    piece
+                        .toByteArray(StandardCharsets.UTF_8)
+                        .size
+
+                if (pieceBytes <= maxBytes) {
+
+                    current.append(piece)
+
+                } else {
+
+                    /*
+                     * CJK text often has no spaces.
+                     * Split character-by-character when needed.
+                     */
+                    var smallPart = StringBuilder()
+
+                    for (character in piece) {
+
+                        val next =
+                            smallPart
+                                .toString() + character
+
+                        val nextBytes =
+                            next
+                                .toByteArray(StandardCharsets.UTF_8)
+                                .size
+
+                        if (nextBytes > maxBytes) {
+
+                            if (smallPart.isNotEmpty()) {
+                                result +=
+                                    smallPart
+                                        .toString()
+                                        .trim()
+                            }
+
+                            smallPart =
+                                StringBuilder()
+                        }
+
+                        smallPart.append(character)
+                    }
+
+                    if (smallPart.isNotEmpty()) {
+                        current.append(smallPart)
+                    }
+                }
+            }
+        }
+
+        flushCurrent()
+
+        return result.filter {
+            it.isNotBlank()
+        }
+    }
+
+    /**
+     * Send one translation request to MyMemory.
+     */
+    private fun translateChunk(
         text: String,
         sourceLanguage: String,
         targetLanguage: String
-    ): OnlineTranslationResult? {
+    ): String? {
 
         var connection: HttpURLConnection? = null
 
         return try {
 
-            /*
-             * MyMemory has a 500-byte limit for q.
-             * Keep OCR requests within that limit.
-             */
-            val safeText =
-                text
-                    .trim()
-                    .take(450)
-
-            if (safeText.isBlank()) {
-                return null
-            }
-
             val encodedText =
                 URLEncoder.encode(
-                    safeText,
+                    text,
                     StandardCharsets.UTF_8.name()
                 )
 
-            val encodedPair =
+            val languagePair =
+                "$sourceLanguage|$targetLanguage"
+
+            val encodedLanguagePair =
                 URLEncoder.encode(
-                    "$sourceLanguage|$targetLanguage",
+                    languagePair,
                     StandardCharsets.UTF_8.name()
                 )
+
+            val requestUrl =
+                "$ENDPOINT" +
+                    "?q=$encodedText" +
+                    "&langpair=$encodedLanguagePair" +
+                    "&mt=1"
 
             val url =
-                URL(
-                    "$ENDPOINT?q=$encodedText&langpair=$encodedPair&mt=1"
-                )
+                URL(requestUrl)
 
             connection =
                 (url.openConnection() as HttpURLConnection).apply {
 
                     requestMethod = "GET"
 
-                    connectTimeout = TIMEOUT_MS
-                    readTimeout = TIMEOUT_MS
+                    connectTimeout =
+                        TIMEOUT_MS
+
+                    readTimeout =
+                        TIMEOUT_MS
 
                     useCaches = false
 
@@ -171,9 +407,10 @@ class OnlineTranslationManager {
                     )
                 }
 
-            if (
-                connection.responseCode !in 200..299
-            ) {
+            val responseCode =
+                connection.responseCode
+
+            if (responseCode !in 200..299) {
                 return null
             }
 
@@ -187,25 +424,28 @@ class OnlineTranslationManager {
                         it.readText()
                     }
 
+            if (response.isBlank()) {
+                return null
+            }
+
             val json =
                 JSONObject(response)
 
-            val responseStatus =
+            val status =
                 json.optInt(
                     "responseStatus",
                     0
                 )
 
-            if (
-                responseStatus != 200
-            ) {
+            if (status != 200) {
                 return null
             }
 
             val responseData =
                 json.optJSONObject(
                     "responseData"
-                ) ?: return null
+                )
+                    ?: return null
 
             val translated =
                 responseData
@@ -216,15 +456,10 @@ class OnlineTranslationManager {
                     .trim()
 
             if (translated.isBlank()) {
-                return null
+                null
+            } else {
+                translated
             }
-
-            OnlineTranslationResult(
-                detectedSourceLanguage =
-                    sourceLanguage,
-                translatedText =
-                    translated
-            )
 
         } catch (_: Exception) {
 
@@ -236,7 +471,11 @@ class OnlineTranslationManager {
         }
     }
 
+    /**
+     * Release ML Kit resources.
+     */
     fun close() {
+
         languageIdentifier.close()
     }
 }
