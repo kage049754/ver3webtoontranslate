@@ -20,9 +20,11 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import com.claude.webtoontranslator.MainActivity
 import com.claude.webtoontranslator.R
+import com.claude.webtoontranslator.ocr.OnlineTranslationManager
 import com.claude.webtoontranslator.ocr.TextRecognitionManager
 import com.claude.webtoontranslator.ocr.TranslationManager
 import com.claude.webtoontranslator.util.SettingsDataStore
@@ -51,6 +53,7 @@ class OverlayService : Service() {
 
     private val textRecognitionManager = TextRecognitionManager()
     private val translationManager = TranslationManager()
+    private val onlineTranslationManager = OnlineTranslationManager()
     private lateinit var settingsDataStore: SettingsDataStore
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
@@ -83,7 +86,19 @@ class OverlayService : Service() {
             // Show the floating button immediately - independent of whether
             // capture setup below succeeds, so the user always has a visible
             // toggle even if something in the projection pipeline fails.
-            addButtonOverlay()
+            try {
+                addButtonOverlay()
+            } catch (e: Exception) {
+                // Some OEMs report the overlay permission as granted but still
+                // reject addView(). Surface this instead of failing silently.
+                Toast.makeText(
+                    this,
+                    "Couldn't draw the floating button: ${e.message}. Check \"Display over other apps\" is enabled for this app.",
+                    Toast.LENGTH_LONG
+                ).show()
+                stopSelf()
+                return START_NOT_STICKY
+            }
 
             try {
                 mediaProjection?.registerCallback(object : MediaProjection.Callback() {
@@ -102,6 +117,7 @@ class OverlayService : Service() {
                 }
             } catch (e: Exception) {
                 setButtonLabel("!")
+                Toast.makeText(this, "Screen capture setup failed: ${e.message}", Toast.LENGTH_LONG).show()
             }
 
             serviceScope.launch {
@@ -109,6 +125,7 @@ class OverlayService : Service() {
                 settingsDataStore.setModelsDownloaded(true)
             }
         } else {
+            Toast.makeText(this, "Missing screen-capture permission data - overlay can't start.", Toast.LENGTH_LONG).show()
             stopSelf()
         }
 
@@ -236,15 +253,16 @@ class OverlayService : Service() {
                     return@launch
                 }
 
-                val overlayItems = mutableListOf<OverlayItem>()
-                for (block in blocks) {
-                    val result = translationManager.detectAndTranslate(block.text) ?: continue
-                    val bgColor = TranslationOverlayView.sampleBackgroundColor(bitmap, block.boundingBox)
-                    overlayItems.add(OverlayItem(block.boundingBox, result.translatedText, bgColor))
+                val mode = settingsDataStore.translationMode.first()
+                val overlayItems = if (mode == "online") {
+                    val targetLang = settingsDataStore.onlineTargetLanguage.first()
+                    buildOnlineOverlayItems(blocks, bitmap, targetLang)
+                } else {
+                    buildOfflineOverlayItems(blocks, bitmap)
                 }
 
                 if (overlayItems.isEmpty()) {
-                    setButtonLabel("EN?")
+                    setButtonLabel(if (mode == "online") "N/A" else "EN?")
                     state = State.IDLE
                     return@launch
                 }
@@ -257,6 +275,35 @@ class OverlayService : Service() {
                 state = State.IDLE
             }
         }
+    }
+
+    /** Offline path: fixed ja/ko/es/zh -> en, fully on-device. */
+    private suspend fun buildOfflineOverlayItems(
+        blocks: List<com.claude.webtoontranslator.ocr.TextBlockResult>,
+        bitmap: android.graphics.Bitmap
+    ): List<OverlayItem> {
+        val overlayItems = mutableListOf<OverlayItem>()
+        for (block in blocks) {
+            val result = translationManager.detectAndTranslate(block.text) ?: continue
+            val bgColor = TranslationOverlayView.sampleBackgroundColor(bitmap, block.boundingBox)
+            overlayItems.add(OverlayItem(block.boundingBox, result.translatedText, bgColor))
+        }
+        return overlayItems
+    }
+
+    /** Online path: auto-detects any source language, translates to the chosen target. */
+    private suspend fun buildOnlineOverlayItems(
+        blocks: List<com.claude.webtoontranslator.ocr.TextBlockResult>,
+        bitmap: android.graphics.Bitmap,
+        targetLang: String
+    ): List<OverlayItem> {
+        val overlayItems = mutableListOf<OverlayItem>()
+        for (block in blocks) {
+            val result = onlineTranslationManager.translate(block.text, targetLang) ?: continue
+            val bgColor = TranslationOverlayView.sampleBackgroundColor(bitmap, block.boundingBox)
+            overlayItems.add(OverlayItem(block.boundingBox, result.translatedText, bgColor))
+        }
+        return overlayItems
     }
 
     private suspend fun <T> withDispatcherIO(block: suspend () -> T): T {
