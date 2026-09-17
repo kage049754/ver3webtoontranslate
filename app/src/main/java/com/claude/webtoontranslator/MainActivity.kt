@@ -203,7 +203,7 @@ fun MainScreen(onStartOverlay: () -> Unit, settingsDataStore: SettingsDataStore)
                 if (mode == "online")
                     "Auto-detects any language on screen and overlays a translation into your chosen language."
                 else
-                    "Reads Korean, Japanese, Chinese, or Spanish text on screen and overlays an English translation right on top of the original.",
+                    "Reads Korean, Japanese, Chinese, Spanish, or French text on screen and overlays an English translation right on top of the original.",
                 fontSize = 15.sp,
                 color = Color(0xFFB0AAB8),
                 modifier = Modifier.padding(horizontal = 8.dp)
