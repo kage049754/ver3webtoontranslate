@@ -12,6 +12,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -300,6 +301,9 @@ fun MainScreen(
 
     val scope =
         rememberCoroutineScope()
+
+    val context =
+    androidx.compose.ui.platform.LocalContext.current    
 
     val mode by
         settingsDataStore
@@ -742,15 +746,10 @@ fun MainScreen(
                         }
 
                         Toast.makeText(
-                            /* context */
-                            androidx.compose.ui.platform
-                                .LocalContext
-                                .current,
-
-                            "Tap the floating 🔍 button to select an area.",
-
-                            Toast.LENGTH_SHORT
-                        ).show()
+    context,
+    "Tap the floating 🔍 button to select an area.",
+    Toast.LENGTH_SHORT
+).show()
                     }
                 )
 
@@ -819,14 +818,10 @@ fun MainScreen(
                             }
 
                             Toast.makeText(
-                                androidx.compose.ui.platform
-                                    .LocalContext
-                                    .current,
-
-                                "Saved scan area cleared.",
-
-                                Toast.LENGTH_SHORT
-                            ).show()
+    context,
+    "Saved scan area cleared.",
+    Toast.LENGTH_SHORT
+).show()
                         },
 
                         modifier =
@@ -950,25 +945,23 @@ fun ScanModeOption(
 ) {
 
     Surface(
+    modifier =
+        Modifier
+            .fillMaxWidth()
+            .clickable(
+                enabled = enabled,
+                onClick = onClick
+            ),
 
-        modifier =
-            Modifier.fillMaxWidth(),
+    shape =
+        RoundedCornerShape(12.dp),
 
-        shape =
-            RoundedCornerShape(12.dp),
-
-        color =
-            if (selected)
-                Color(0xFF3B3548)
-            else
-                Color(0xFF242229),
-
-        onClick =
-            if (enabled)
-                onClick
-            else
-                {}
-    ) {
+    color =
+        if (selected)
+            Color(0xFF3B3548)
+        else
+            Color(0xFF242229)
+) {
 
         Row(
 
