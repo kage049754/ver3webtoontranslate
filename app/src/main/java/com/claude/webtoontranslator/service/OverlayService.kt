@@ -106,7 +106,7 @@ class OverlayService : Service() {
     private var areaSelectorView: ScanAreaSelectorView? = null
     private var areaSelectorParams: WindowManager.LayoutParams? = null
 
-    private var state = State.START
+    private var state = State.READY
 
     private var tapCount = 0
 
@@ -347,7 +347,7 @@ class OverlayService : Service() {
         val button =
             TextView(this).apply {
 
-                text = "▶"
+                text = "🔍"
 
                 setTextColor(Color.WHITE)
 
@@ -514,90 +514,66 @@ class OverlayService : Service() {
         buttonParams = params
     }
 
-    private fun onButtonTapped() {
+   private fun onButtonTapped() {
+    tapCount++
 
-        /*
-         * Count every normal tap.
-         *
-         * Five quick taps completely closes
-         * the overlay service.
-         */
-        tapCount++
+    tapResetHandler.removeCallbacksAndMessages(null)
+    tapResetHandler.postDelayed({
+        tapCount = 0
+    }, TAP_RESET_DELAY)
 
-        tapResetHandler.removeCallbacks(
-            resetTapCountRunnable
-        )
+    /*
+     * Five quick taps:
+     * Completely close the overlay service.
+     */
+    if (tapCount >= CLOSE_TAP_COUNT) {
+        Toast.makeText(
+            this,
+            "Closing Webtoon Translator",
+            Toast.LENGTH_SHORT
+        ).show()
 
-        tapResetHandler.postDelayed(
-            resetTapCountRunnable,
-            TAP_RESET_DELAY
-        )
+        stopSelf()
+        return
+    }
 
-        if (tapCount >= CLOSE_TAP_COUNT) {
+    when (state) {
 
-            tapCount = 0
-
-            Toast.makeText(
-                this,
-                "Closing Webtoon Translator",
-                Toast.LENGTH_SHORT
-            ).show()
-
-            stopSelf()
-
-            return
+        State.START -> {
+            /*
+             * If START is reached for any reason,
+             * immediately switch to Scan mode.
+             */
+            state = State.READY
+            setButtonLabel("🔍")
         }
 
-        when (state) {
+        State.READY -> {
+            /*
+             * Scan immediately.
+             */
+            runCaptureAndTranslate()
+        }
 
-            State.START -> {
+        State.WORKING -> {
+            /*
+             * Do nothing while OCR/
+             * translation is running.
+             */
+        }
 
-                /*
-                 * First tap:
-                 * Start/arm the scanner.
-                 */
-                state = State.READY
+        State.SHOWING -> {
+            /*
+             * Stop/clear translation,
+             * then immediately return to Scan mode.
+             */
+            clearOverlay()
 
+            state = State.READY
                 setButtonLabel("🔍")
-
-                Toast.makeText(
-                    this,
-                    "Ready to scan",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-
-            State.READY -> {
-
-                /*
-                 * Second tap:
-                 * Scan.
-                 */
-                runCaptureAndTranslate()
-            }
-
-            State.WORKING -> {
-
-                /*
-                 * Do nothing while OCR/
-                 * translation is running.
-                 */
-            }
-
-            State.SHOWING -> {
-
-                /*
-                 * Third tap:
-                 * Stop/clear current translation.
-                 */
-                clearOverlay()
-
-                state = State.START
-
-                setButtonLabel("▶")
-            }
         }
     }
+}
 
     // =========================================================
     // CAPTURE + SCAN AREA
