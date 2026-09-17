@@ -12,12 +12,6 @@ import kotlinx.coroutines.flow.map
 
 private val Context.dataStore by preferencesDataStore(name = "wt_settings")
 
-/**
- * Persists user preferences (overlay opacity, font size, translation mode, last-
- * used state) so they survive the app or service being killed and the phone
- * restarting. No user "content" (translations) is persisted - each capture is
- * transient by design.
- */
 class SettingsDataStore(private val context: Context) {
 
     companion object {
@@ -28,45 +22,139 @@ class SettingsDataStore(private val context: Context) {
         private val KEY_MODELS_DOWNLOADED = booleanPreferencesKey("models_downloaded")
         private val KEY_TRANSLATION_MODE = stringPreferencesKey("translation_mode")
         private val KEY_ONLINE_TARGET_LANGUAGE = stringPreferencesKey("online_target_language")
+
+        // Scan area settings
+        private val KEY_SCAN_MODE = stringPreferencesKey("scan_mode")
+        private val KEY_AREA_LEFT = intPreferencesKey("area_left")
+        private val KEY_AREA_TOP = intPreferencesKey("area_top")
+        private val KEY_AREA_RIGHT = intPreferencesKey("area_right")
+        private val KEY_AREA_BOTTOM = intPreferencesKey("area_bottom")
+        private val KEY_HAS_SAVED_AREA = booleanPreferencesKey("has_saved_area")
     }
 
-    val opacity: Flow<Float> = context.dataStore.data.map { it[KEY_OPACITY] ?: 0.92f }
-    val fontScale: Flow<Float> = context.dataStore.data.map { it[KEY_FONT_SCALE] ?: 1.0f }
-    val alwaysOnTop: Flow<Boolean> = context.dataStore.data.map { it[KEY_ALWAYS_ON_TOP] ?: true }
-    val autoHideSeconds: Flow<Int> = context.dataStore.data.map { it[KEY_AUTO_HIDE_SECONDS] ?: 5 }
-    val modelsDownloaded: Flow<Boolean> = context.dataStore.data.map { it[KEY_MODELS_DOWNLOADED] ?: false }
+    val opacity: Flow<Float> =
+        context.dataStore.data.map { it[KEY_OPACITY] ?: 0.92f }
 
-    /** "offline" (ja/ko/es/zh -> en, on-device) or "online" (auto-detect any -> chosen target). */
-    val translationMode: Flow<String> = context.dataStore.data.map { it[KEY_TRANSLATION_MODE] ?: "offline" }
+    val fontScale: Flow<Float> =
+        context.dataStore.data.map { it[KEY_FONT_SCALE] ?: 1.0f }
 
-    /** Target language code used only in online mode, e.g. "en", "fr", "vi". */
-    val onlineTargetLanguage: Flow<String> = context.dataStore.data.map { it[KEY_ONLINE_TARGET_LANGUAGE] ?: "en" }
+    val alwaysOnTop: Flow<Boolean> =
+        context.dataStore.data.map { it[KEY_ALWAYS_ON_TOP] ?: true }
+
+    val autoHideSeconds: Flow<Int> =
+        context.dataStore.data.map { it[KEY_AUTO_HIDE_SECONDS] ?: 5 }
+
+    val modelsDownloaded: Flow<Boolean> =
+        context.dataStore.data.map { it[KEY_MODELS_DOWNLOADED] ?: false }
+
+    /**
+     * "offline" or "online"
+     */
+    val translationMode: Flow<String> =
+        context.dataStore.data.map { it[KEY_TRANSLATION_MODE] ?: "offline" }
+
+    /**
+     * Online target language.
+     * Examples: en, tl, fr, es
+     */
+    val onlineTargetLanguage: Flow<String> =
+        context.dataStore.data.map { it[KEY_ONLINE_TARGET_LANGUAGE] ?: "en" }
+
+    /**
+     * Scan mode:
+     * whole_screen
+     * select_area
+     * last_selected_area
+     */
+    val scanMode: Flow<String> =
+        context.dataStore.data.map { it[KEY_SCAN_MODE] ?: "whole_screen" }
+
+    val areaLeft: Flow<Int> =
+        context.dataStore.data.map { it[KEY_AREA_LEFT] ?: 0 }
+
+    val areaTop: Flow<Int> =
+        context.dataStore.data.map { it[KEY_AREA_TOP] ?: 0 }
+
+    val areaRight: Flow<Int> =
+        context.dataStore.data.map { it[KEY_AREA_RIGHT] ?: 0 }
+
+    val areaBottom: Flow<Int> =
+        context.dataStore.data.map { it[KEY_AREA_BOTTOM] ?: 0 }
+
+    val hasSavedArea: Flow<Boolean> =
+        context.dataStore.data.map { it[KEY_HAS_SAVED_AREA] ?: false }
 
     suspend fun setOpacity(value: Float) {
-        context.dataStore.edit { it[KEY_OPACITY] = value }
+        context.dataStore.edit {
+            it[KEY_OPACITY] = value.coerceIn(0f, 1f)
+        }
     }
 
     suspend fun setFontScale(value: Float) {
-        context.dataStore.edit { it[KEY_FONT_SCALE] = value }
+        context.dataStore.edit {
+            it[KEY_FONT_SCALE] = value.coerceIn(0.5f, 3.0f)
+        }
     }
 
     suspend fun setAlwaysOnTop(value: Boolean) {
-        context.dataStore.edit { it[KEY_ALWAYS_ON_TOP] = value }
+        context.dataStore.edit {
+            it[KEY_ALWAYS_ON_TOP] = value
+        }
     }
 
     suspend fun setAutoHideSeconds(value: Int) {
-        context.dataStore.edit { it[KEY_AUTO_HIDE_SECONDS] = value }
+        context.dataStore.edit {
+            it[KEY_AUTO_HIDE_SECONDS] = value.coerceAtLeast(0)
+        }
     }
 
     suspend fun setModelsDownloaded(value: Boolean) {
-        context.dataStore.edit { it[KEY_MODELS_DOWNLOADED] = value }
+        context.dataStore.edit {
+            it[KEY_MODELS_DOWNLOADED] = value
+        }
     }
 
     suspend fun setTranslationMode(value: String) {
-        context.dataStore.edit { it[KEY_TRANSLATION_MODE] = value }
+        context.dataStore.edit {
+            it[KEY_TRANSLATION_MODE] = value
+        }
     }
 
     suspend fun setOnlineTargetLanguage(value: String) {
-        context.dataStore.edit { it[KEY_ONLINE_TARGET_LANGUAGE] = value }
+        context.dataStore.edit {
+            it[KEY_ONLINE_TARGET_LANGUAGE] = value
+        }
+    }
+
+    suspend fun setScanMode(value: String) {
+        context.dataStore.edit {
+            it[KEY_SCAN_MODE] = value
+        }
+    }
+
+    suspend fun saveScanArea(
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int
+    ) {
+        context.dataStore.edit {
+            it[KEY_AREA_LEFT] = left
+            it[KEY_AREA_TOP] = top
+            it[KEY_AREA_RIGHT] = right
+            it[KEY_AREA_BOTTOM] = bottom
+            it[KEY_HAS_SAVED_AREA] = true
+            it[KEY_SCAN_MODE] = "last_selected_area"
+        }
+    }
+
+    suspend fun clearSavedScanArea() {
+        context.dataStore.edit {
+            it[KEY_AREA_LEFT] = 0
+            it[KEY_AREA_TOP] = 0
+            it[KEY_AREA_RIGHT] = 0
+            it[KEY_AREA_BOTTOM] = 0
+            it[KEY_HAS_SAVED_AREA] = false
+        }
     }
 }
