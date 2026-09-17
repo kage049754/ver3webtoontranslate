@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Webtoon Translator</string>
+    <string name="notification_channel_name">Overlay Translator</string>
+    <string name="notification_text">Translator overlay is running</string>
+</resources>

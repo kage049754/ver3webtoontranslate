@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.WebtoonTranslator" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@color/surface</item>
+        <item name="android:windowBackground">@color/surface</item>
+    </style>
+</resources>
