@@ -312,8 +312,8 @@ class OverlayService : Service() {
             }
         }
 
-        setButtonLabel("▶")
-        state = State.START
+       setButtonLabel("🔍")
+state = State.READY
 
         return START_NOT_STICKY
     }
