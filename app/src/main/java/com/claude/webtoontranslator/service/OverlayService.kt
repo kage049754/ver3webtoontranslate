@@ -8,15 +8,22 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.graphics.Rect
+import android.graphics.drawable.GradientDrawable
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
 import android.widget.Toast
@@ -24,6 +31,7 @@ import androidx.core.app.NotificationCompat
 import com.claude.webtoontranslator.MainActivity
 import com.claude.webtoontranslator.R
 import com.claude.webtoontranslator.ocr.OnlineTranslationManager
+import com.claude.webtoontranslator.ocr.TextBlockResult
 import com.claude.webtoontranslator.ocr.TextRecognitionManager
 import com.claude.webtoontranslator.ocr.TranslationManager
 import com.claude.webtoontranslator.util.SettingsDataStore
@@ -33,7 +41,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 
 class OverlayService : Service() {
 
@@ -44,10 +55,23 @@ class OverlayService : Service() {
         const val NOTIFICATION_ID = 1001
 
         private const val CLICK_DRAG_THRESHOLD = 12
+
+        // Five quick taps completely closes the service.
+        private const val CLOSE_TAP_COUNT = 5
+        private const val TAP_RESET_DELAY = 1800L
     }
 
+    /*
+     * Button cycle:
+     *
+     * START  -> ▶
+     * READY  -> 🔍
+     * SCAN   -> …
+     * RESULT -> ⏹
+     */
     private enum class State {
-        IDLE,
+        START,
+        READY,
         WORKING,
         SHOWING
     }
@@ -79,7 +103,20 @@ class OverlayService : Service() {
     private var overlayView: TranslationOverlayView? = null
     private var overlayParams: WindowManager.LayoutParams? = null
 
-    private var state = State.IDLE
+    private var areaSelectorView: ScanAreaSelectorView? = null
+    private var areaSelectorParams: WindowManager.LayoutParams? = null
+
+    private var state = State.START
+
+    private var tapCount = 0
+
+    private val tapResetHandler =
+        Handler(Looper.getMainLooper())
+
+    private val resetTapCountRunnable =
+        Runnable {
+            tapCount = 0
+        }
 
     override fun onCreate() {
         super.onCreate()
@@ -132,11 +169,6 @@ class OverlayService : Service() {
                 )
             }
 
-        /*
-         * The MediaProjection permission Intent must
-         * come directly from the screen-capture
-         * permission activity.
-         */
         if (
             resultCode != Activity.RESULT_OK ||
             resultData == null
@@ -205,9 +237,6 @@ class OverlayService : Service() {
 
         mediaProjection = projection
 
-        /*
-         * Create floating button.
-         */
         try {
 
             addButtonOverlay()
@@ -225,9 +254,6 @@ class OverlayService : Service() {
             return START_NOT_STICKY
         }
 
-        /*
-         * Start screen capture.
-         */
         try {
 
             mediaProjection?.registerCallback(
@@ -238,19 +264,17 @@ class OverlayService : Service() {
                     }
 
                 },
-                android.os.Handler(
-                    android.os.Looper.getMainLooper()
-                )
+                Handler(Looper.getMainLooper())
             )
 
             val metrics =
                 DisplayMetrics()
 
+            @Suppress("DEPRECATION")
             windowManager.defaultDisplay
                 .getRealMetrics(metrics)
 
-            mediaProjection?.let {
-                projectionInstance ->
+            mediaProjection?.let { projectionInstance ->
 
                 val capture =
                     ScreenCaptureManager(
@@ -274,17 +298,22 @@ class OverlayService : Service() {
             ).show()
         }
 
-        /*
-         * Pre-download translation models.
-         */
         serviceScope.launch {
 
-            translationManager
-                .preDownloadModels()
+            try {
 
-            settingsDataStore
-                .setModelsDownloaded(true)
+                translationManager
+                    .preDownloadModels()
+
+                settingsDataStore
+                    .setModelsDownloaded(true)
+
+            } catch (_: Exception) {
+            }
         }
+
+        setButtonLabel("▶")
+        state = State.START
 
         return START_NOT_STICKY
     }
@@ -305,9 +334,9 @@ class OverlayService : Service() {
         }
     }
 
-    // ---------------------------------------------------------
+    // =========================================================
     // FLOATING BUTTON
-    // ---------------------------------------------------------
+    // =========================================================
 
     private fun addButtonOverlay() {
 
@@ -318,24 +347,31 @@ class OverlayService : Service() {
         val button =
             TextView(this).apply {
 
-                text = "訳"
+                text = "▶"
 
-                setTextColor(
-                    Color.WHITE
-                )
+                setTextColor(Color.WHITE)
 
-                textSize = 18f
+                textSize = 20f
 
-                gravity =
-                    Gravity.CENTER
+                gravity = Gravity.CENTER
 
-                setBackgroundColor(
-                    Color.parseColor(
-                        "#6750A4"
-                    )
-                )
+                val background =
+                    GradientDrawable().apply {
+                        shape =
+                            GradientDrawable.OVAL
+
+                        setColor(
+                            Color.parseColor(
+                                "#6750A4"
+                            )
+                        )
+                    }
+
+                this.background = background
 
                 alpha = 0.95f
+
+                elevation = 12f
             }
 
         val sizePx =
@@ -375,7 +411,7 @@ class OverlayService : Service() {
 
                 gravity =
                     Gravity.TOP or
-                    Gravity.START
+                        Gravity.START
 
                 x = 0
                 y = 300
@@ -389,9 +425,7 @@ class OverlayService : Service() {
 
         var isDrag = false
 
-        button.setOnTouchListener {
-            _,
-            event ->
+        button.setOnTouchListener { _, event ->
 
             when (event.action) {
 
@@ -419,14 +453,14 @@ class OverlayService : Service() {
                     val dx =
                         (
                             event.rawX -
-                            downX
-                        ).toInt()
+                                downX
+                            ).toInt()
 
                     val dy =
                         (
                             event.rawY -
-                            downY
-                        ).toInt()
+                                downY
+                            ).toInt()
 
                     if (
                         abs(dx) >
@@ -443,11 +477,16 @@ class OverlayService : Service() {
                         params.y =
                             startY + dy
 
-                        windowManager
-                            .updateViewLayout(
-                                button,
-                                params
-                            )
+                        try {
+
+                            windowManager
+                                .updateViewLayout(
+                                    button,
+                                    params
+                                )
+
+                        } catch (_: Exception) {
+                        }
                     }
 
                     true
@@ -477,23 +516,92 @@ class OverlayService : Service() {
 
     private fun onButtonTapped() {
 
+        /*
+         * Count every normal tap.
+         *
+         * Five quick taps completely closes
+         * the overlay service.
+         */
+        tapCount++
+
+        tapResetHandler.removeCallbacks(
+            resetTapCountRunnable
+        )
+
+        tapResetHandler.postDelayed(
+            resetTapCountRunnable,
+            TAP_RESET_DELAY
+        )
+
+        if (tapCount >= CLOSE_TAP_COUNT) {
+
+            tapCount = 0
+
+            Toast.makeText(
+                this,
+                "Closing Webtoon Translator",
+                Toast.LENGTH_SHORT
+            ).show()
+
+            stopSelf()
+
+            return
+        }
+
         when (state) {
 
-            State.IDLE ->
-                runCaptureAndTranslate()
+            State.START -> {
 
-            State.SHOWING ->
-                clearOverlay()
+                /*
+                 * First tap:
+                 * Start/arm the scanner.
+                 */
+                state = State.READY
+
+                setButtonLabel("🔍")
+
+                Toast.makeText(
+                    this,
+                    "Ready to scan",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+
+            State.READY -> {
+
+                /*
+                 * Second tap:
+                 * Scan.
+                 */
+                runCaptureAndTranslate()
+            }
 
             State.WORKING -> {
-                // Ignore taps while translating.
+
+                /*
+                 * Do nothing while OCR/
+                 * translation is running.
+                 */
+            }
+
+            State.SHOWING -> {
+
+                /*
+                 * Third tap:
+                 * Stop/clear current translation.
+                 */
+                clearOverlay()
+
+                state = State.START
+
+                setButtonLabel("▶")
             }
         }
     }
 
-    // ---------------------------------------------------------
-    // CAPTURE + OCR + TRANSLATION
-    // ---------------------------------------------------------
+    // =========================================================
+    // CAPTURE + SCAN AREA
+    // =========================================================
 
     private fun runCaptureAndTranslate() {
 
@@ -508,96 +616,461 @@ class OverlayService : Service() {
 
             try {
 
-                val bitmap =
+                val fullBitmap =
                     capture.captureFrame()
 
-                if (bitmap == null) {
+                if (fullBitmap == null) {
 
                     setButtonLabel("!")
-
-                    state = State.IDLE
-
-                    return@launch
-                }
-
-                val blocks =
-                    withDispatcherIO {
-
-                        textRecognitionManager
-                            .recognize(bitmap)
-                    }
-
-                if (blocks.isEmpty()) {
-
-                    setButtonLabel("∅")
-
-                    state = State.IDLE
+                    state = State.READY
 
                     return@launch
                 }
 
-                val mode =
+                /*
+                 * Check the selected scan mode.
+                 */
+                val scanMode =
                     settingsDataStore
-                        .translationMode
+                        .scanMode
                         .first()
 
-                val overlayItems =
-                    if (mode == "online") {
+                if (
+                    scanMode ==
+                    "select_area"
+                ) {
 
-                        val targetLang =
-                            settingsDataStore
-                                .onlineTargetLanguage
-                                .first()
+                    /*
+                     * User selected "Select Area".
+                     * Show selector first.
+                     */
+                    state = State.READY
 
-                        buildOnlineOverlayItems(
-                            blocks,
-                            bitmap,
-                            targetLang
-                        )
+                    setButtonLabel("🔍")
 
-                    } else {
-
-                        buildOfflineOverlayItems(
-                            blocks,
-                            bitmap
-                        )
-                    }
-
-                if (overlayItems.isEmpty()) {
-
-                    setButtonLabel(
-                        if (mode == "online") {
-                            "N/A"
-                        } else {
-                            "EN?"
-                        }
+                    showAreaSelector(
+                        fullBitmap
                     )
-
-                    state = State.IDLE
 
                     return@launch
                 }
 
-                showOverlay(
-                    overlayItems
+                val scanData =
+                    prepareScanBitmap(
+                        fullBitmap,
+                        scanMode
+                    )
+
+                if (scanData == null) {
+
+                    state = State.READY
+                    setButtonLabel("🔍")
+
+                    Toast.makeText(
+                        this@OverlayService,
+                        "No saved scan area. Select an area first.",
+                        Toast.LENGTH_LONG
+                    ).show()
+
+                    return@launch
+                }
+
+                processBitmap(
+                    scanData.bitmap,
+                    scanData.offsetX,
+                    scanData.offsetY,
+                    fullBitmap
                 )
 
-                setButtonLabel("✕")
-
-                state = State.SHOWING
-
-            } catch (_: Exception) {
+            } catch (e: Exception) {
 
                 setButtonLabel("!")
+                state = State.READY
 
-                state = State.IDLE
+                Toast.makeText(
+                    this@OverlayService,
+                    "Scan failed: ${e.message}",
+                    Toast.LENGTH_LONG
+                ).show()
             }
         }
     }
 
+    private data class ScanBitmapData(
+        val bitmap: Bitmap,
+        val offsetX: Int,
+        val offsetY: Int
+    )
+
+    private suspend fun prepareScanBitmap(
+        fullBitmap: Bitmap,
+        mode: String
+    ): ScanBitmapData? {
+
+        if (
+            mode ==
+            "whole_screen"
+        ) {
+
+            return ScanBitmapData(
+                bitmap = fullBitmap,
+                offsetX = 0,
+                offsetY = 0
+            )
+        }
+
+        /*
+         * Use the last saved area.
+         */
+        val hasArea =
+            settingsDataStore
+                .hasSavedArea
+                .first()
+
+        if (!hasArea) {
+            return null
+        }
+
+        val left =
+            settingsDataStore
+                .areaLeft
+                .first()
+
+        val top =
+            settingsDataStore
+                .areaTop
+                .first()
+
+        val right =
+            settingsDataStore
+                .areaRight
+                .first()
+
+        val bottom =
+            settingsDataStore
+                .areaBottom
+                .first()
+
+        val safeLeft =
+            left.coerceIn(
+                0,
+                fullBitmap.width - 1
+            )
+
+        val safeTop =
+            top.coerceIn(
+                0,
+                fullBitmap.height - 1
+            )
+
+        val safeRight =
+            right.coerceIn(
+                safeLeft + 1,
+                fullBitmap.width
+            )
+
+        val safeBottom =
+            bottom.coerceIn(
+                safeTop + 1,
+                fullBitmap.height
+            )
+
+        val width =
+            safeRight - safeLeft
+
+        val height =
+            safeBottom - safeTop
+
+        if (
+            width < 10 ||
+            height < 10
+        ) {
+            return null
+        }
+
+        val cropped =
+            Bitmap.createBitmap(
+                fullBitmap,
+                safeLeft,
+                safeTop,
+                width,
+                height
+            )
+
+        return ScanBitmapData(
+            bitmap = cropped,
+            offsetX = safeLeft,
+            offsetY = safeTop
+        )
+    }
+
+    private suspend fun processBitmap(
+        bitmap: Bitmap,
+        offsetX: Int,
+        offsetY: Int,
+        fullBitmap: Bitmap
+    ) {
+
+        val blocks =
+            withContext(Dispatchers.Default) {
+
+                textRecognitionManager
+                    .recognize(bitmap)
+            }
+
+        if (blocks.isEmpty()) {
+
+            setButtonLabel("∅")
+            state = State.READY
+
+            return
+        }
+
+        /*
+         * Move OCR coordinates back to the
+         * original full-screen coordinates.
+         */
+        val adjustedBlocks =
+            blocks.map { block ->
+
+                val adjustedRect =
+                    Rect(
+                        block.boundingBox
+                    )
+
+                adjustedRect.offset(
+                    offsetX,
+                    offsetY
+                )
+
+                TextBlockResult(
+                    text = block.text,
+                    boundingBox =
+                        adjustedRect
+                )
+            }
+
+        val mode =
+            settingsDataStore
+                .translationMode
+                .first()
+
+        val overlayItems =
+            if (
+                mode ==
+                "online"
+            ) {
+
+                val targetLang =
+                    settingsDataStore
+                        .onlineTargetLanguage
+                        .first()
+
+                buildOnlineOverlayItems(
+                    adjustedBlocks,
+                    fullBitmap,
+                    targetLang
+                )
+
+            } else {
+
+                buildOfflineOverlayItems(
+                    adjustedBlocks,
+                    fullBitmap
+                )
+            }
+
+        if (
+            overlayItems.isEmpty()
+        ) {
+
+            setButtonLabel(
+                if (
+                    mode ==
+                    "online"
+                ) {
+                    "N/A"
+                } else {
+                    "EN?"
+                }
+            )
+
+            state = State.READY
+
+            return
+        }
+
+        showOverlay(
+            overlayItems
+        )
+
+        setButtonLabel("⏹")
+
+        state = State.SHOWING
+    }
+
+    // =========================================================
+    // AREA SELECTOR
+    // =========================================================
+
+    private fun showAreaSelector(
+        bitmap: Bitmap
+    ) {
+
+        removeAreaSelector()
+
+        val selector =
+            ScanAreaSelectorView(
+                this
+            )
+
+        selector.onSelectionComplete =
+            { rect ->
+
+                serviceScope.launch {
+
+                    settingsDataStore
+                        .saveScanArea(
+                            rect.left,
+                            rect.top,
+                            rect.right,
+                            rect.bottom
+                        )
+
+                    removeAreaSelector()
+
+                    Toast.makeText(
+                        this@OverlayService,
+                        "Scan area saved",
+                        Toast.LENGTH_SHORT
+                    ).show()
+
+                    /*
+                     * Immediately scan the newly
+                     * selected area.
+                     */
+                    val fullBitmap =
+                        captureManager
+                            ?.captureFrame()
+
+                    if (
+                        fullBitmap == null
+                    ) {
+
+                        state = State.READY
+                        setButtonLabel("🔍")
+
+                        return@launch
+                    }
+
+                    val scanData =
+                        prepareScanBitmap(
+                            fullBitmap,
+                            "last_selected_area"
+                        )
+
+                    if (
+                        scanData == null
+                    ) {
+
+                        state = State.READY
+                        setButtonLabel("🔍")
+
+                        return@launch
+                    }
+
+                    state = State.WORKING
+                    setButtonLabel("…")
+
+                    processBitmap(
+                        scanData.bitmap,
+                        scanData.offsetX,
+                        scanData.offsetY,
+                        fullBitmap
+                    )
+                }
+            }
+
+        selector.onSelectionCancelled =
+            {
+
+                removeAreaSelector()
+
+                state = State.READY
+                setButtonLabel("🔍")
+
+                Toast.makeText(
+                    this,
+                    "Area selection cancelled",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+
+        val overlayType =
+            if (
+                Build.VERSION.SDK_INT >=
+                Build.VERSION_CODES.O
+            ) {
+
+                WindowManager.LayoutParams
+                    .TYPE_APPLICATION_OVERLAY
+
+            } else {
+
+                @Suppress("DEPRECATION")
+
+                WindowManager.LayoutParams
+                    .TYPE_PHONE
+            }
+
+        val params =
+            WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                overlayType,
+                WindowManager.LayoutParams
+                    .FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+
+                gravity =
+                    Gravity.TOP or
+                        Gravity.START
+            }
+
+        windowManager.addView(
+            selector,
+            params
+        )
+
+        areaSelectorView = selector
+        areaSelectorParams = params
+    }
+
+    private fun removeAreaSelector() {
+
+        areaSelectorView?.let {
+
+            try {
+
+                windowManager
+                    .removeView(it)
+
+            } catch (_: Exception) {
+            }
+        }
+
+        areaSelectorView = null
+        areaSelectorParams = null
+    }
+
+    // =========================================================
+    // OFFLINE TRANSLATION
+    // =========================================================
+
     private suspend fun buildOfflineOverlayItems(
-        blocks: List<com.claude.webtoontranslator.ocr.TextBlockResult>,
-        bitmap: android.graphics.Bitmap
+        blocks: List<TextBlockResult>,
+        bitmap: Bitmap
     ): List<OverlayItem> {
 
         val overlayItems =
@@ -631,9 +1104,13 @@ class OverlayService : Service() {
         return overlayItems
     }
 
+    // =========================================================
+    // ONLINE TRANSLATION
+    // =========================================================
+
     private suspend fun buildOnlineOverlayItems(
-        blocks: List<com.claude.webtoontranslator.ocr.TextBlockResult>,
-        bitmap: android.graphics.Bitmap,
+        blocks: List<TextBlockResult>,
+        bitmap: Bitmap,
         targetLang: String
     ): List<OverlayItem> {
 
@@ -669,28 +1146,9 @@ class OverlayService : Service() {
         return overlayItems
     }
 
-    private suspend fun <T> withDispatcherIO(
-        block: suspend () -> T
-    ): T {
-
-        return kotlinx.coroutines
-            .withContext(
-                Dispatchers.Default
-            ) {
-                block()
-            }
-    }
-
-    private fun setButtonLabel(
-        label: String
-    ) {
-
-        buttonView?.text = label
-    }
-
-    // ---------------------------------------------------------
+    // =========================================================
     // TRANSLATION OVERLAY
-    // ---------------------------------------------------------
+    // =========================================================
 
     private fun showOverlay(
         items: List<OverlayItem>
@@ -720,30 +1178,31 @@ class OverlayService : Service() {
                 }
         }
 
+        val overlayType =
+            if (
+                Build.VERSION.SDK_INT >=
+                Build.VERSION_CODES.O
+            ) {
+
+                WindowManager.LayoutParams
+                    .TYPE_APPLICATION_OVERLAY
+
+            } else {
+
+                @Suppress("DEPRECATION")
+
+                WindowManager.LayoutParams
+                    .TYPE_PHONE
+            }
+
         val params =
             WindowManager.LayoutParams(
 
-                WindowManager.LayoutParams
-                    .MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
 
-                WindowManager.LayoutParams
-                    .MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
 
-                if (
-                    Build.VERSION.SDK_INT >=
-                    Build.VERSION_CODES.O
-                ) {
-
-                    WindowManager.LayoutParams
-                        .TYPE_APPLICATION_OVERLAY
-
-                } else {
-
-                    @Suppress("DEPRECATION")
-
-                    WindowManager.LayoutParams
-                        .TYPE_PHONE
-                },
+                overlayType,
 
                 WindowManager.LayoutParams
                     .FLAG_NOT_TOUCHABLE or
@@ -770,9 +1229,9 @@ class OverlayService : Service() {
 
         removeOverlayView()
 
-        setButtonLabel("訳")
+        setButtonLabel("🔍")
 
-        state = State.IDLE
+        state = State.READY
     }
 
     private fun removeOverlayView() {
@@ -789,11 +1248,23 @@ class OverlayService : Service() {
         }
 
         overlayView = null
+        overlayParams = null
     }
 
-    // ---------------------------------------------------------
+    // =========================================================
+    // BUTTON LABEL
+    // =========================================================
+
+    private fun setButtonLabel(
+        label: String
+    ) {
+
+        buttonView?.text = label
+    }
+
+    // =========================================================
     // NOTIFICATION
-    // ---------------------------------------------------------
+    // =========================================================
 
     private fun createNotificationChannel() {
 
@@ -864,13 +1335,17 @@ class OverlayService : Service() {
             .build()
     }
 
-    // ---------------------------------------------------------
+    // =========================================================
     // SERVICE LIFECYCLE
-    // ---------------------------------------------------------
+    // =========================================================
 
     override fun onDestroy() {
 
-        super.onDestroy()
+        tapResetHandler.removeCallbacks(
+            resetTapCountRunnable
+        )
+
+        removeAreaSelector()
 
         removeOverlayView()
 
@@ -885,18 +1360,271 @@ class OverlayService : Service() {
             }
         }
 
+        buttonView = null
+
         captureManager?.stop()
+        captureManager = null
 
         mediaProjection?.stop()
+        mediaProjection = null
 
         textRecognitionManager.close()
 
         translationManager.close()
 
         serviceScope.cancel()
+
+        super.onDestroy()
     }
 
     override fun onBind(
         intent: Intent?
     ): IBinder? = null
+
+
+    // =========================================================
+    // AREA SELECTION VIEW
+    // =========================================================
+
+    private class ScanAreaSelectorView(
+        context: android.content.Context
+    ) : View(context) {
+
+        var onSelectionComplete:
+                ((Rect) -> Unit)? = null
+
+        var onSelectionCancelled:
+                (() -> Unit)? = null
+
+        private val paint =
+            Paint(Paint.ANTI_ALIAS_FLAG)
+
+        private val borderPaint =
+            Paint(Paint.ANTI_ALIAS_FLAG)
+
+        private var startX = 0f
+        private var startY = 0f
+
+        private var currentX = 0f
+        private var currentY = 0f
+
+        private var selecting = false
+
+        init {
+
+            setBackgroundColor(
+                Color.argb(
+                    80,
+                    0,
+                    0,
+                    0
+                )
+            )
+
+            paint.color =
+                Color.argb(
+                    70,
+                    0,
+                    0,
+                    0
+                )
+
+            borderPaint.color =
+                Color.WHITE
+
+            borderPaint.style =
+                Paint.Style.STROKE
+
+            borderPaint.strokeWidth = 4f
+        }
+
+        override fun onDraw(
+            canvas: android.graphics.Canvas
+        ) {
+
+            super.onDraw(canvas)
+
+            if (!selecting) {
+
+                paint.color =
+                    Color.argb(
+                        70,
+                        0,
+                        0,
+                        0
+                    )
+
+                canvas.drawRect(
+                    0f,
+                    0f,
+                    width.toFloat(),
+                    height.toFloat(),
+                    paint
+                )
+
+                return
+            }
+
+            val left =
+                min(
+                    startX,
+                    currentX
+                )
+
+            val top =
+                min(
+                    startY,
+                    currentY
+                )
+
+            val right =
+                max(
+                    startX,
+                    currentX
+                )
+
+            val bottom =
+                max(
+                    startY,
+                    currentY
+                )
+
+            paint.color =
+                Color.argb(
+                    45,
+                    255,
+                    255,
+                    255
+                )
+
+            canvas.drawRect(
+                left,
+                top,
+                right,
+                bottom,
+                paint
+            )
+
+            canvas.drawRect(
+                left,
+                top,
+                right,
+                bottom,
+                borderPaint
+            )
+        }
+
+        override fun onTouchEvent(
+            event: MotionEvent
+        ): Boolean {
+
+            when (event.action) {
+
+                MotionEvent.ACTION_DOWN -> {
+
+                    startX =
+                        event.x
+
+                    startY =
+                        event.y
+
+                    currentX =
+                        event.x
+
+                    currentY =
+                        event.y
+
+                    selecting = true
+
+                    invalidate()
+
+                    return true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+
+                    currentX =
+                        event.x
+
+                    currentY =
+                        event.y
+
+                    invalidate()
+
+                    return true
+                }
+
+                MotionEvent.ACTION_UP -> {
+
+                    currentX =
+                        event.x
+
+                    currentY =
+                        event.y
+
+                    val left =
+                        min(
+                            startX,
+                            currentX
+                        ).toInt()
+
+                    val top =
+                        min(
+                            startY,
+                            currentY
+                        ).toInt()
+
+                    val right =
+                        max(
+                            startX,
+                            currentX
+                        ).toInt()
+
+                    val bottom =
+                        max(
+                            startY,
+                            currentY
+                        ).toInt()
+
+                    selecting = false
+
+                    invalidate()
+
+                    if (
+                        right - left >= 20 &&
+                        bottom - top >= 20
+                    ) {
+
+                        onSelectionComplete?.invoke(
+                            Rect(
+                                left,
+                                top,
+                                right,
+                                bottom
+                            )
+                        )
+
+                    } else {
+
+                        onSelectionCancelled?.invoke()
+                    }
+
+                    return true
+                }
+
+                MotionEvent.ACTION_CANCEL -> {
+
+                    selecting = false
+
+                    invalidate()
+
+                    onSelectionCancelled?.invoke()
+
+                    return true
+                }
+            }
+
+            return true
+        }
+    }
 }
